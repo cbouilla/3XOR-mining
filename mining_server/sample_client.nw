@@ -1,0 +1,168 @@
+\documentclass{article}
+\usepackage{noweb}
+
+\usepackage{amsmath,amsfonts,amssymb}
+\usepackage{textcomp}
+\usepackage{parskip}
+\usepackage{geometry}
+\usepackage{tikz}
+\usepackage{xspace}
+
+
+\def\cweb{{\tt CWEB\/}}
+\newcommand{\join}{\bowtie}
+
+\newcommand{\NN}{\textsf{nanomsg}\xspace}
+\newcommand{\OMP}{\textsf{OpenMP}\xspace}
+
+
+%\hfuzz=0.5pt
+\begin{document}
+
+\title{A sample client for the \texttt{FOOBAR}-modified Miner}
+%\author{Charles Bouillaguet}
+
+\maketitle
+
+\section{Introduction}
+
+This sample client does nothing but interaction with the
+server. Familiarity with the server and the communication protocol is assumed.
+
+The client has the usual structure :
+
+<<*>>=
+<<Header files to include>>;
+<<Type definitions>>
+<<The main program>>;
+
+<<Header files to include>>=
+#define _POSIX_C_SOURCE 200112L 
+#define _GNU_SOURCE
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <limits.h>
+#include <getopt.h>
+#include <string.h>
+#include <err.h>
+#include <nanomsg/nn.h>
+#include <nanomsg/reqrep.h>
+#include <nanomsg/pipeline.h>
+
+
+<<The main program>>=
+int main(int argc, char **argv)
+{
+	<<Process the command line>>;
+	<<Initialize networking>>;
+	<<Main client loop>>;
+}
+
+@ The only command-line argument is the address of the server. 
+
+<<Process the command line>>=
+struct option longopts[3] = {
+	{"server-address", required_argument, NULL, 'a'},
+	{"server-port", required_argument, NULL, 'p'},
+	{NULL, 0, NULL, 0}
+};
+char *server_address = NULL;
+int server_port = 5555;
+
+signed char ch;
+while ((ch = getopt_long(argc, argv, "", longopts, NULL)) != -1) {
+	switch (ch) {
+	case 'a':
+		server_address = optarg;
+		break;
+	case 'p':
+		server_port = atoi(optarg);
+		break;
+	default:
+		errx(1, "Unknown option %c\n", ch);
+	}
+}
+if (server_address == NULL) 
+	errx(1, "missing required option --server-address");
+
+
+@ Because we are in the non-static part of the infrastructure, we do not
+\emph{bind} our \NN socket to a network address, but we \emph{connect} it to
+the address of the server. While the server has a [[NN_REP / NN_PULL]] socket, we have [[NN_REQ / NN_PUSH]].
+
+<<Build adress strings>>=
+char *req_address = malloc(strlen(server_address) + 16);
+char *push_address = malloc(strlen(server_address) + 16);
+sprintf(req_address, "tcp://%s:%d", server_address, server_port);
+sprintf(push_address, "tcp://%s:%d", server_address, server_port + 1);
+
+
+<<Initialize networking>>=
+<<Build adress strings>>
+int socket_req = nn_socket(AF_SP, NN_REQ);
+if (socket_req < 0)
+	errx(1, "nn_socket [REQ] : %s\n", nn_strerror(nn_errno()));
+if (nn_connect(socket_req, req_address) < 0)
+	errx(1, "nn_bind [REQ] : %s\n", nn_strerror(nn_errno()));
+
+int socket_push = nn_socket(AF_SP, NN_PUSH);
+if (socket_push < 0)
+	errx(1, "nn_socket [PUSH] : %s\n", nn_strerror(nn_errno()));
+if (nn_connect(socket_push, push_address) < 0)
+	errx(1, "nn_bind [PUSH] : %s\n", nn_strerror(nn_errno()));
+
+
+@ We are now ready for the client loop: send result, rinse, repeat.
+
+<<Type definitions>>=
+struct greeting_msg_t {
+	int kind;
+	int64_t counter;
+} __attribute__((packed));;
+
+struct nonce_msg_t {
+	int64_t counter;
+	uint32_t nonce;
+} __attribute__((packed));;
+
+<<Main client loop>>=
+int kind;
+int64_t counter;
+assert(sizeof(struct nonce_msg_t) == 12);
+<<Send ``Hello'' message; get kind and initial counter value>>;
+while (1) {
+	struct nonce_msg_t msg;
+	msg.counter = counter++;
+	msg.nonce = rand();
+	<<Send nonce message>>;
+}
+
+@ The ``Hello" message if the first that the client sends. It is empty. In return we get the job description.
+
+<<Send ``Hello'' message; get kind and initial counter value>>=
+fprintf(stderr, "Sending HELLO message\n");
+if (-1 == nn_send(socket_req, NULL, 0, 0))
+	errx(1, "nn_send %s", nn_strerror(nn_errno()));
+
+fprintf(stderr, "Receiving greeting message\n");
+struct greeting_msg_t greet;
+if (-1 == nn_recv(socket_req, &greet, sizeof(greet), 0))
+	errx(1, "nn_recv %s", nn_strerror(nn_errno()));
+counter = greet.counter;
+kind = greet.kind;
+fprintf(stderr, "FOOBAR server tells us to work on kind %d, starting at %ld\n", kind, counter);
+
+@ Sending work result is easy.
+
+<<Send nonce message>>=
+fprintf(stderr, "Sending nonce message\n");
+if (-1 == nn_send(socket_push, &msg, sizeof(msg), 0))
+	errx(1, "nn_send nonce (%s)", nn_strerror(nn_errno()));
+
+@
+ 
+The poor ARM CPU of the AntMiner S7 is capable of sending 250k nonce/s with this setup.
+
+\end{document}

@@ -1,0 +1,1 @@
+LD_LIBRARY_PATH=/usr/local/lib ./cgminer --bitmain-dev /dev/bitmain-asic --bitmain-options 115200:32:8:5:700:0782:0706  --bitmain-hwerror --queue 8192

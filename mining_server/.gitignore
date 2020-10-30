@@ -1,0 +1,10 @@
+*.tex 
+*.aux 
+*.log 
+*~ 
+*.o 
+*.c
+server
+sample_client
+fsck
+*.pdf

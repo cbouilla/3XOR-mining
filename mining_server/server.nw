@@ -1,0 +1,358 @@
+\documentclass[a4paper]{article}
+\usepackage{noweb}
+
+\usepackage{amsmath,amsfonts,amssymb}
+\usepackage{textcomp}
+\usepackage{parskip}
+\usepackage{geometry}
+%\usepackage{tikz}
+\usepackage{xspace}
+\usepackage{hyperref}
+
+
+\def\cweb{{\tt CWEB\/}}
+\newcommand{\join}{\bowtie}
+
+\newcommand{\NN}{\textsf{nanomsg}\xspace}
+\newcommand{\OMP}{\textsf{OpenMP}\xspace}
+
+
+%\hfuzz=0.5pt
+\begin{document}
+
+\title{A server for the \texttt{FOOBAR}-modified Miner}
+%\author{Charles Bouillaguet}
+
+\maketitle
+
+\section{Introduction}
+
+Short version: send tasks to miner. Collect results. Handle restarts.
+
+<<*>>=
+#define _XOPEN_SOURCE 500
+<<Header files to include>>
+<<Type definitions>>
+<<Global variables>>
+<<Utility functions>>
+<<The main program>>
+
+
+@ The main program is typical of a server.
+
+<<The main program>>=
+int main(int argc, char **argv)
+{
+  <<Process the command line>>
+  <<Set sensible default settings>>
+  <<Open status file for reading; Read last counter value>>
+  <<Open the work file for append>>
+  <<Initialize networking>>
+  <<Main server loop>>
+}
+
+@ Let us deal with the inevitable first: the inclusion of standard headers.
+
+<<Header files to include>>=
+#include <stdlib.h>
+#include <stdio.h>
+#include <inttypes.h>
+#include <err.h>
+#include <getopt.h>
+#include <sys/time.h>
+#include <string.h>
+#include <assert.h>
+
+@ Also inevitable, and rather boring, is the processing of command-line
+options. The server takes four parameters:
+\begin{itemize}
+\item The kind of tasks $k$ ($0 = \texttt{FOO}, 1=\texttt{BAR}, 2=\texttt{FOOBAR}$), mandatory.
+\item The network address at which to listen (optional).
+\item The base port at which to listen (optional).
+\item The name of the ``work file'' to which task results are written (optional).
+\item The name of the ``status file'' to which task results are written (optional).
+\end{itemize}
+
+We use the standard POSIX [[getopt()]] function to deal with command-line options.
+
+<<Global variables>>=
+struct option longopts[6] = {
+	{"kind", required_argument, NULL, 'k'},
+	{"work-file", required_argument, NULL, 'w'},
+	{"status-file", required_argument, NULL, 's'},
+	{"server-address", required_argument, NULL, 'a'},
+	{"server-port", required_argument, NULL, 'p'},
+	{NULL, 0, NULL, 0}
+};
+int kind = -1;
+char *server_address = NULL;
+int server_port = -1;
+char *work_filename = NULL;
+char *status_filename = NULL;
+
+
+<<Process the command line>>=
+char ch;
+while ((ch = getopt_long(argc, argv, "", longopts, NULL)) != -1) {
+	switch (ch) {
+	case 'k': 
+		kind = atoi(optarg);
+		break;
+	case 'a': 
+		server_address = optarg;
+		break;
+	case 'p': 
+		server_port = atoi(optarg);
+		break;
+	case 's': 
+		status_filename = optarg;
+		break;
+	case 'w': 
+	work_filename = optarg;
+	break;
+	default:
+		errx(1, "Unknown option\n");
+	}
+}
+if (kind < 0)
+	errx(1, "missing required argument --kind");
+if (kind >= 3)
+	errx(1, "bad value of --kind");
+
+
+@ By default, the work file is called \texttt{[kind].work.log}, the status file
+is named \texttt{[kind].status} and the server address is \verb#tcp://*:5555#
+(which means ``all network interfaces on port 5555'').
+
+<<Set sensible default settings>>=
+char *DEFAULT_WORK[3] = {"foo.work", "bar.work", "foobar.work"};
+char *DEFAULT_STATUS[3] = {"foo.status", "bar.status", "foobar.status"};
+
+if (!server_address)
+        server_address = "*";     //strdup();
+if (server_port < 0)
+        server_port = 5555;
+if (!work_filename)
+	work_filename = DEFAULT_WORK[kind];
+if (!status_filename)
+	status_filename = DEFAULT_STATUS[kind];
+
+
+@ \section{Networking} 
+
+To ease dealing with network sockets, we use the \NN middleware library. It
+transfers messages asynchronously between hosts, and does not interpret them.
+
+<<Header files to include>>=
+#include <nanomsg/nn.h>
+#include <nanomsg/reqrep.h>
+#include <nanomsg/pipeline.h>
+
+@ Our server waits for requests from the clients and... serves them. Clients can
+send two types of messages:
+\begin{itemize}
+\item The ``Hello'' message. The server responds with a kind and a starting counter value.
+
+\item The ``result'' message which contains a counter value and a nonce.
+\end{itemize}
+
+The server binds two sockets for the two messages type: a REQ socket for the former and a PULL socket for the later.
+
+<<Type definitions>>=
+struct greeting_msg_t {
+	int kind;
+	int64_t counter;
+} __attribute__((packed));
+
+struct nonce_msg_t {
+	int64_t counter;
+	uint32_t nonce;
+} __attribute__((packed));
+
+@ We enforce that we are using the same [[struct]] size as our peers. They also make that check.
+
+<<Initialize networking>>=
+assert(sizeof(struct nonce_msg_t) == 12);
+
+@ The two sockets must each have an adress and a port, and \NN expects strings
+to describe the binding adresses. We thus build these strings at run-time.
+
+<<Build address strings>>=
+char *server_address_rep = malloc(strlen(server_address) + 16);
+char *server_address_pull = malloc(strlen(server_address) + 16);
+sprintf(server_address_rep, "tcp://%s:%d", server_address, server_port);
+sprintf(server_address_pull, "tcp://%s:%d", server_address, server_port + 1);
+
+@ To communicate using \NN, we need to setup two [[socket]]s. They must be
+created and bound to a network address. The user may choose which IP adress
+and/or which network interface can be bound to the sockets using a command-
+line argument.
+
+<<Initialize networking>>=
+<<Build address strings>>
+int socket_rep = nn_socket(AF_SP, NN_REP);
+if (socket_rep < 0)
+	errx(1, "nn_socket [REP] : %s\n", nn_strerror(nn_errno()));
+if (nn_bind(socket_rep, server_address_rep) < 0)
+	errx(1, "nn_bind [REP] : %s\n", nn_strerror(nn_errno()));
+
+int socket_pull = nn_socket(AF_SP, NN_PULL);
+if (socket_pull < 0)
+	errx(1, "nn_socket [PULL] : %s\n", nn_strerror(nn_errno()));
+if (nn_bind(socket_pull, server_address_pull) < 0)
+	errx(1, "nn_bind [PULL] : %s\n", nn_strerror(nn_errno()));
+
+@ The main loop run indefinitely. The server must be manually stopped.
+
+<<Main server loop>>=
+printf("Server ready on port %d\n", server_port);
+while (1) {
+	<<Wait for incoming message and process it>>
+	<<Potentially store status and display progress information>>
+}
+
+@ We listen on both sockets at once using a [[nn_poll]] operation. If we ever
+receive a message of an incorrect size, we ignore it.
+
+<<Wait for incoming message and process it>>=
+struct nn_pollfd pfd[2];
+pfd[0].fd = socket_rep;
+pfd[0].events = NN_POLLIN;
+pfd[0].revents = 0;
+pfd[1].fd = socket_pull;
+pfd[1].events = NN_POLLIN;
+pfd[1].revents = 0;
+int rc = nn_poll(pfd, 2, 1000);
+if (rc == 0)
+	fprintf(stderr, "Timeout!\n");
+if (rc < 0)
+	errx(1, "nn_poll : %s\n", nn_strerror(nn_errno()));
+
+if (pfd[0].revents & NN_POLLIN) {
+	void *buf = NULL;
+	int size = nn_recv(socket_rep, &buf, NN_MSG, NN_DONTWAIT);
+	if (size < 0) 
+		errx(1, "nn_recv [REP] : %s\n", nn_strerror(nn_errno()));
+	<<Send work to the miner>>
+	nn_freemsg(buf);
+}
+if (pfd[1].revents & NN_POLLIN) {
+	struct nonce_msg_t *msg = NULL;
+	int size = nn_recv(socket_pull, &msg, NN_MSG, NN_DONTWAIT);
+	if (size < 0) {
+		errx(1, "nn_recv [PULL] : %s\n", nn_strerror(nn_errno()));
+	} else {
+		if (size != sizeof(*msg)) {
+			fprintf(stderr, "\nBizarre! I got a PUSH message of size %d. Ignoring it\n", size);
+		} else {
+			<<Store nonce and update status>>
+		}
+	}
+	nn_freemsg(msg);
+}
+
+
+<<Send work to the miner>>=
+struct greeting_msg_t greet;
+greet.kind = kind;
+greet.counter = counter;
+if (nn_send(socket_rep, &greet, sizeof(greet), 0) < 0)
+	errx(1, "nn_send [REP] : %s\n", nn_strerror(nn_errno()));
+fprintf(stderr, "Greetings to miner! Start on kind %d, at counter=%ld, please.\n", kind, counter);
+
+@ \section{Nonces}
+
+The server stores nonces in a simple \emph{work file}. It is a list of
+(counter, nonce) pairs, and it is only written. In addition, the work file can
+be opened (for reading) by other programs running concurrently with the
+server. This allows to exploit partial results of the long-running
+computation. To make things as easy as possible, the server just writes down
+all the ``nonce'' messages it gets from the clients to this file.
+
+@ The journal file may not exist; this is not an error. It will be created soon
+enough. When parsing it, we hold the total CPU time spent in the computation.
+
+<<Global variables>>=
+FILE *work_file;
+
+<<Open the work file for append>>=
+work_file = fopen(work_filename, "a");
+if (work_file == NULL)
+	err(1, "Impossible to open work file %s for append\n", work_filename);
+
+<<Store nonce and update status>>=
+// printf("got counter=%lx and nonce=%x\n", msg->counter, msg->nonce);
+if (msg->counter > counter)
+	counter = msg->counter;
+if (1 != fwrite(msg, size, 1, work_file))
+	err(1, "fwrite didn't work");
+nonce_received++;
+
+@ \section{Status}
+
+If the server stops and restart, it must keep providing
+accurate start values of the counter to the miner. Therefore, every minute
+(say), the current value of the counter will be stored in the status file.
+
+<<Global variables>>=
+int64_t counter, last_counter_saved, nonce_received;
+double last_counter_time;
+FILE *status_file;
+
+@ We rely on a time function with sub-second precision.
+
+<<Utility functions>>=
+double wtime()
+{
+	struct timeval ts;
+	gettimeofday(&ts, NULL);
+        return ts.tv_sec + (ts.tv_usec / 1e6);
+}
+
+@ Failure to open the status file is not an error (it happens on cold start).
+
+<<Open status file for reading; Read last counter value>>=
+status_file = fopen(status_filename, "r");
+if (status_file == NULL) {
+	fprintf(stderr, "Impossible to open status file %s for reading\n", status_filename);
+	counter = 0;
+} else {
+	size_t size = fread(&counter, sizeof(counter), 1, status_file);
+	if (size != 1)
+		errx(1, "Error while reading status file");
+	fclose(status_file);
+	fprintf(stderr, "%s: restarting at counter=%ld\n", status_filename, counter);
+}
+last_counter_saved = 0;
+last_counter_time = wtime();
+
+@ We save everything every 1000 nonces, which should be once every two seconds.
+
+<<Potentially store status and display progress information>>=
+if (nonce_received > last_counter_saved  + 1000) {
+	status_file = fopen(status_filename, "w");
+	if (work_file == NULL) 
+		errx(1, "Error while opening status file for writing");
+	fwrite(&counter, sizeof(counter), 1, status_file);
+	fclose(status_file);
+	double now = wtime();
+	fprintf(stderr, "\rPort %d. current counter=%ld, nonce receives=%ld, rate=%.0f/s", 
+		server_port, counter, nonce_received, 1.0 * (nonce_received - last_counter_saved) / (now - last_counter_time));
+	last_counter_saved = nonce_received;
+	last_counter_time = now;
+	fflush(stderr);
+	fflush(work_file);
+}
+
+@ 
+
+For my own reference: copying nonce files to amazon S3 is done with:
+\begin{verbatim}
+   aws s3 cp FILE s3://3sum-foobar/
+\end{verbatim}
+
+TODO : incorporate a watchdog that emails me if the miner stops sending stuff.
+
+
+\end{document}
+
