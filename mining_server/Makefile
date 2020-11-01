@@ -22,5 +22,5 @@ doc: server.pdf sample_client.pdf
 	pdflatex $<
 
 clean:
-	rm -rf *.o *.c *.pdf *.aux *.bbl *.blg *.log *.out *.cweb *.idx
+	rm -rf *.o *.c *.pdf *.aux *.bbl *.blg *.log *.out *.cweb *.idx *.tex
 	rm -rf server sample_client

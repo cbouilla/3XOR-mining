@@ -133,13 +133,14 @@ int64_t counter;
 assert(sizeof(struct nonce_msg_t) == 12);
 <<Send ``Hello'' message; get kind and initial counter value>>;
 while (1) {
+	/* forge random result */
 	struct nonce_msg_t msg;
 	msg.counter = counter++;
 	msg.nonce = rand();
 	<<Send nonce message>>;
 }
 
-@ The ``Hello" message if the first that the client sends. It is empty. In return we get the job description.
+@ The ``Hello" message is the first that the client sends. It is empty. In return we get the job description.
 
 <<Send ``Hello'' message; get kind and initial counter value>>=
 fprintf(stderr, "Sending HELLO message\n");
@@ -163,6 +164,7 @@ if (-1 == nn_send(socket_push, &msg, sizeof(msg), 0))
 
 @
  
-The poor ARM CPU of the AntMiner S7 is capable of sending 250k nonce/s with this setup.
+The poor ARM CPU of the AntMiner S7 is capable of sending 250k nonce/s with this setup. 
+Thus, this server protocol and the \NN library are up to the task.
 
 \end{document}

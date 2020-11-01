@@ -212,7 +212,9 @@ while (1) {
 }
 
 @ We listen on both sockets at once using a [[nn_poll]] operation. If we ever
-receive a message of an incorrect size, we ignore it.
+receive a message of an incorrect size, we ignore it. Note that [[nn_recv]] 
+allocates memory for the message, which must be freed using [[nn_freemsg]]
+afterwards.
 
 <<Wait for incoming message and process it>>=
 struct nn_pollfd pfd[2];
@@ -270,7 +272,7 @@ computation. To make things as easy as possible, the server just writes down
 all the ``nonce'' messages it gets from the clients to this file.
 
 @ The journal file may not exist; this is not an error. It will be created soon
-enough. When parsing it, we hold the total CPU time spent in the computation.
+enough. 
 
 <<Global variables>>=
 FILE *work_file;
@@ -346,13 +348,7 @@ if (nonce_received > last_counter_saved  + 1000) {
 
 @ 
 
-For my own reference: copying nonce files to amazon S3 is done with:
-\begin{verbatim}
-   aws s3 cp FILE s3://3sum-foobar/
-\end{verbatim}
 
 TODO : incorporate a watchdog that emails me if the miner stops sending stuff.
 
-
 \end{document}
-
