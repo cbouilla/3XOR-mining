@@ -1,0 +1,37 @@
+custom_cgminer/ : modified version of the cgminer program  
+mining_server/  : minimal server that talks to the above mining "client"
+
+preprocessing/  : puts the output of the mining operations into a suitable form. Algorithm S for the BG/Q.
+ijoux/          : Algorithms G and J for the BG/Q
+postprocessing/ : Fetch and prints the solutions
+
+See preprocessing/litterate.pdf for the "litterate programming" version of the preprocessing programs, and much more detailed explanations.
+
+The core of algorithms G and J is in ijoux/joux_v3.c
+The companion programs ijoux/do_task.c and ijoux/do_task_groups.c are frontends. The latter was run on BG/Q, the former is for tests.
+
+
+Trying the iterated Joux algorithm
+----------------------------------
+0) run "make" in preprocessing/ and ijoux/
+
+1) Generate an instance of a given size N with known solutions
+
+	# preprocessing/forger N
+
+N = 128000 is reasonable. The 3 files:
+- bar.000  
+- foo.000
+- foobar.000 
+are created in the current directory.
+
+1.5) Generate the slices (in the current directory).
+
+	# preprocessing/slicer foobar.000  --output 000 --time-control 0.02
+
+This runs algorithm S for about 3 minutes. The resulting "slice file" is called 000, in the current directory.
+
+2) Solve it
+
+	# ijoux/do_task --i=0 --j=0 --hash-dir . --slice-dir .
+
